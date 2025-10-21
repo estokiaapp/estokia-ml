@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
-DB_PATH = '/Users/gkanawati/Documents/GitHub/estokia/estokia-backend/prisma/estokia.db'
+DB_PATH = '/Users/gkanawati/Documents/GitHub/estokia/estokia-backend/prisma/dev.db'
 
 class SalesPredictionDB:
 
-    def __init__(self, db_path=DB_PATH, user_id=1):
+    def __init__(self, db_path=DB_PATH, user_id=9):
         self.db_path = db_path
         self.user_id = user_id
         self.conn = None
@@ -28,45 +28,47 @@ class SalesPredictionDB:
     def load_data(self):
         """Load data from the database into pandas DataFrames for a specific user"""
         self.connect_db()
-        self.products = pd.read_sql('SELECT * FROM products', self.conn)
-        self.sales = pd.read_sql(
-            'SELECT * FROM sales WHERE user_id=?',
+        self.sale_items = pd.read_sql(
+            """
+                SELECT si.*, s.sale_date, p.name AS product_name
+                FROM sale_items si
+                INNER JOIN sales s ON si.sale_id = s.id
+                INNER JOIN products p ON si.product_id = p.id
+                WHERE s.user_id=?
+                AND s.status='COMPLETED'
+            """,
             self.conn,
             params=(self.user_id,)
         )
-        self.sale_items = pd.read_sql('SELECT * FROM sale_items', self.conn)
 
         self.conn.close()
 
         print(f"Data loaded successfully for user_id={self.user_id}")
-        print(f"Products: {len(self.products)}")
-        print(f"Sales: {len(self.sales)}")
-        print(f"Sale Items: {len(self.sale_items)}")
-
+        print(f"Sale Items length: {len(self.sale_items)}")
+        print(self.sale_items.head())
 
     def prepare_data(self):
         """Prepare data for sales prediction - unified DataFrame approach"""
-        product_sales = self.sale_items
-        print('~ prepare_data - product_sales: \n', product_sales)
-        print('~ prepare_data - sales: \n', self.sales)
+        # Use sale_items which already includes sale_date (selected in load_data)
+        if not hasattr(self, 'sale_items') or self.sale_items is None:
+            print("Error: sale_items not loaded. Run load_data() first.")
+            return None
 
+        product_sales = self.sale_items.copy()
         if product_sales.empty:
             return None
 
-        # Merge sale items with sales to get sale_date
-        sales_data = product_sales.merge(
-            self.sales[['id', 'sale_date']],
-            left_on='sale_id',
-            right_on='id',
-            how='left'
-        )
+        # Ensure sale_date exists and is datetime
+        if 'sale_date' not in product_sales.columns:
+            print("Error: sale_date column not found in sale_items.")
+            return None
 
-        sales_data['sale_date'] = pd.to_datetime(sales_data['sale_date']).dt.normalize()
+        product_sales['sale_date'] = pd.to_datetime(product_sales['sale_date']).dt.normalize()
 
-        print('~ prepare_data - Merged sales_data: \n', sales_data)
+        print('~ prepare_data - Merged product_sales: \n', product_sales)
 
         # Group by product_id and sale_date, sum quantities
-        sales_aggregated = sales_data.groupby(['product_id', 'sale_date']).agg({'quantity': 'sum'}).reset_index()
+        sales_aggregated = product_sales.groupby(['product_id', 'sale_date']).agg({'quantity': 'sum'}).reset_index()
 
         print('~ prepare_data - Aggregated sales_aggregated: \n', sales_aggregated)
 
