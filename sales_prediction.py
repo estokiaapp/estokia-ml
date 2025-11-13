@@ -254,6 +254,43 @@ class SalesPredictionDB:
 
         return future_data
 
+    def insert_demand_forecasts(self, db_path, demand_forecasts_df):
+        """Insert demand forecast rows into an existing demand_forecasts table.
+
+        demand_forecasts_df: DataFrame with columns [product_id, days_to_stockout, average_daily_demand, confidence_level, historical_data]
+        """
+        import sqlite3
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+
+            now_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            for _, row in demand_forecasts_df.iterrows():
+                cur.execute(
+                    """
+                    INSERT INTO demand_forecasts (
+                        product_id, days_to_stockout, average_daily_demand,
+                        confidence_level, historical_data, calculation_date, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row.get('product_id'),
+                        float(row.get('days_to_stockout')) if row.get('days_to_stockout') is not None else None,
+                        float(row.get('average_daily_demand')) if row.get('average_daily_demand') is not None else None,
+                        row.get('confidence_level'),
+                        str(row.get('historical_data')),
+                        datetime.now().strftime('%Y-%m-%d'),
+                        now_ts,
+                    ),
+                )
+
+            conn.commit()
+            conn.close()
+            print(f"Inserted {len(demand_forecasts_df)} demand forecast rows into {db_path}")
+        except Exception as e:
+            print(f"Warning: failed to insert demand forecasts into {db_path}: {e}")
+
 def main():
     """Example usage of the SalesPredictionDB class - Full workflow demonstration"""
 
@@ -293,6 +330,46 @@ def main():
         future_predictions = predictor.predict_future(trained_model, days_ahead=30)
 
         print(f"\n{'#'*80}\n")
+
+    # After processing all products, persist a summary of forecasts
+    # Build a DataFrame with one row per product using the last trained model outputs
+    rows = []
+    for product_id in product_ids:
+        prod_data = predictor.demand_forecast[predictor.demand_forecast['product_id'] == product_id]
+        if prod_data.empty:
+            continue
+
+        # Use predict_stockout-like logic: estimate avg daily demand and days to stockout
+        avg_daily = prod_data['quantity'].mean()
+
+        # current_stock: attempt to use latest current_stock in sale_items if present
+        latest = predictor.sale_items[predictor.sale_items['product_id'] == product_id]
+        if not latest.empty and 'current_stock' in latest.columns:
+            current_stock = int(latest.iloc[-1]['current_stock'])
+        else:
+            current_stock = None
+
+        days_to_stockout = None
+        if avg_daily and current_stock is not None and avg_daily > 0:
+            days_to_stockout = current_stock / avg_daily
+
+        hist_summary = {
+            'records': int(len(prod_data)),
+            'start_date': str(prod_data['sale_date'].min().date()),
+            'end_date': str(prod_data['sale_date'].max().date())
+        }
+
+        rows.append({
+            'product_id': product_id,
+            'days_to_stockout': days_to_stockout,
+            'average_daily_demand': avg_daily,
+            'confidence_level': 'UNKNOWN',
+            'historical_data': hist_summary,
+        })
+
+    if rows:
+        df_forecasts = pd.DataFrame(rows)
+        predictor.insert_demand_forecasts(DB_PATH, df_forecasts)
 
 if __name__ == "__main__":
     main()

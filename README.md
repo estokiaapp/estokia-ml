@@ -39,18 +39,21 @@ estokia-ml/
 ### Setup
 
 1. **Clone the repository**
+
 ```bash
 git clone <repository-url>
 cd estokia-ml
 ```
 
 2. **Create and activate virtual environment**
+
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
 3. **Install dependencies**
+
 ```bash
 pip install pandas numpy scikit-learn matplotlib jupyter
 ```
@@ -77,10 +80,11 @@ print(f"Predicted stockout date: {result['stockout_date']}")
 ### Run Complete Analysis
 
 ```bash
-python stock_prediction.py
+python sales_prediction.py
 ```
 
 This will analyze all products in the dataset and generate:
+
 - Stockout predictions for each product
 - Demand trend analysis
 - Priority-based stock alerts
@@ -97,17 +101,17 @@ Open the Jupyter notebook for interactive data exploration and custom analysis.
 
 The system expects CSV data with the following columns:
 
-| Column | Description | Example |
-|--------|-------------|---------|
-| `product_id` | Unique product identifier | PROD001 |
-| `product_name` | Product display name | Notebook Acer Aspire 5 |
-| `sale_date` | Date of sale (YYYY-MM-DD) | 2024-08-01 |
-| `quantity_sold` | Number of units sold | 2 |
-| `current_stock` | Current inventory level | 45 |
-| `minimum_stock` | Minimum stock threshold | 5 |
-| `unit_price` | Price per unit | 2500.00 |
-| `category` | Product category | Eletrônicos |
-| `supplier` | Supplier name | Acer Brasil |
+| Column          | Description               | Example                |
+| --------------- | ------------------------- | ---------------------- |
+| `product_id`    | Unique product identifier | PROD001                |
+| `product_name`  | Product display name      | Notebook Acer Aspire 5 |
+| `sale_date`     | Date of sale (YYYY-MM-DD) | 2024-08-01             |
+| `quantity_sold` | Number of units sold      | 2                      |
+| `current_stock` | Current inventory level   | 45                     |
+| `minimum_stock` | Minimum stock threshold   | 5                      |
+| `unit_price`    | Price per unit            | 2500.00                |
+| `category`      | Product category          | Eletrônicos            |
+| `supplier`      | Supplier name             | Acer Brasil            |
 
 ## 🔧 API Reference
 
@@ -116,11 +120,13 @@ The system expects CSV data with the following columns:
 #### Core Methods
 
 **`load_data(csv_path)`**
+
 - Loads sales data from CSV file
 - Automatically converts dates and handles errors
 - Returns: `bool` (success/failure)
 
 **`predict_stockout_date(product_id, current_stock)`**
+
 - Predicts when a product will run out of stock
 - Returns: Dictionary with prediction details
 
@@ -135,19 +141,23 @@ The system expects CSV data with the following columns:
 ```
 
 **`calculate_daily_demand(product_id, days_lookback=30)`**
+
 - Calculates average daily demand for a product
 - Returns: `float` (daily demand rate)
 
 **`predict_demand_trend(product_id, days_ahead=30)`**
+
 - Analyzes demand trends using linear regression
 - Returns: Dictionary with trend analysis
 
 **`generate_alerts(products_stock)`**
+
 - Generates priority-based alerts for multiple products
 - Input: Dictionary of `{product_id: current_stock}`
 - Returns: List of alert dictionaries sorted by urgency
 
 **`plot_product_analysis(product_id)`**
+
 - Creates visualization plots for sales history and trends
 - Displays: Historical sales and trend line analysis
 
@@ -155,12 +165,12 @@ The system expects CSV data with the following columns:
 
 The system generates four priority levels based on days until stockout:
 
-| Priority | Days Left | Alert Type | Action Required |
-|----------|-----------|------------|----------------|
-| 🚨 **CRITICAL** | ≤ 3 days | IMMEDIATE_STOCKOUT | Order immediately |
-| 🔴 **HIGH** | 4-7 days | URGENT_RESTOCK | Plan urgent restock |
-| 🟡 **MEDIUM** | 8-14 days | PLAN_RESTOCK | Schedule restock |
-| 🟢 **LOW** | > 14 days | MONITOR_STOCK | Continue monitoring |
+| Priority        | Days Left | Alert Type         | Action Required     |
+| --------------- | --------- | ------------------ | ------------------- |
+| 🚨 **CRITICAL** | ≤ 3 days  | IMMEDIATE_STOCKOUT | Order immediately   |
+| 🔴 **HIGH**     | 4-7 days  | URGENT_RESTOCK     | Plan urgent restock |
+| 🟡 **MEDIUM**   | 8-14 days | PLAN_RESTOCK       | Schedule restock    |
+| 🟢 **LOW**      | > 14 days | MONITOR_STOCK      | Continue monitoring |
 
 ## 📊 Confidence Levels
 

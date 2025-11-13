@@ -4,73 +4,87 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
-import sqlite3
-
-DB_PATH = '/Users/gkanawati/Documents/GitHub/estokia/estokia-backend/prisma/dev.db'
 import warnings
 warnings.filterwarnings('ignore')
 
-class StockPrediction:
+class StockPredictionDB:
     def __init__(self):
         self.model = LinearRegression()
         self.predictions = {}
+        self.products_df = None
+        self.sales_df = None
+        self.sale_items_df = None
+        self.categories_df = None
+        self.suppliers_df = None
 
-    def fetch_production_info(self, db_path):
-        """Fetch production info (alert_threshold_days, current_stock) from a sqlite DB.
-
-        Returns a dict: {product_id: {'alert_threshold_days': float, 'current_stock': int}}
-        This is best-effort: if the table/columns are not present the function returns {}.
-        """
-        production_info = {}
+    def load_data(self, data_folder='data/'):
+        """Load all data from CSV files in database format"""
         try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
+            # Load main tables
+            self.products_df = pd.read_csv(f'{data_folder}products.csv')
+            self.sales_df = pd.read_csv(f'{data_folder}sales.csv')
+            self.sale_items_df = pd.read_csv(f'{data_folder}sale_items.csv')
+            self.categories_df = pd.read_csv(f'{data_folder}categories.csv')
+            self.suppliers_df = pd.read_csv(f'{data_folder}suppliers.csv')
 
-            # Try expected column names; use product_id if present, otherwise try id
-            query = (
-                "SELECT product_id, alert_threshold_days, current_stock FROM production"
-            )
-            try:
-                cur.execute(query)
-            except Exception:
-                # fallback: maybe the product id column is called id
-                query = (
-                    "SELECT id as product_id, alert_threshold_days, current_stock FROM production"
-                )
-                cur.execute(query)
+            # Convert dates
+            self.sales_df['sale_date'] = pd.to_datetime(self.sales_df['sale_date'])
+            self.sale_items_df['created_at'] = pd.to_datetime(self.sale_items_df['created_at'])
 
-            rows = cur.fetchall()
-            for row in rows:
-                pid = row[0]
-                try:
-                    threshold = float(row[1]) if row[1] is not None else None
-                except Exception:
-                    threshold = None
-                try:
-                    cs = int(row[2]) if row[2] is not None else None
-                except Exception:
-                    cs = None
-
-                production_info[pid] = {
-                    'alert_threshold_days': threshold,
-                    'current_stock': cs,
-                }
-
-            conn.close()
-        except Exception as e:
-            print(f"Warning: could not fetch production info from {db_path}: {e}")
-
-        return production_info
-
-    def load_data(self, csv_path):
-        """Load sales and stock data from CSV"""
-        try:
-            self.df = pd.read_csv(csv_path)
-            self.df['sale_date'] = pd.to_datetime(self.df['sale_date'])
+            # Create the combined dataset for analysis
+            self._create_analysis_dataset()
             return True
         except Exception as e:
             print(f"Error loading data: {e}")
             return False
+
+    def _create_analysis_dataset(self):
+        """Create a combined dataset for analysis similar to original format"""
+        # Join sale_items with sales to get sale dates
+        sales_items_with_dates = self.sale_items_df.merge(
+            self.sales_df[['id', 'sale_date']],
+            left_on='sale_id',
+            right_on='id',
+            suffixes=('', '_sale')
+        )
+
+        # Join with products to get product info and current stock
+        self.df = sales_items_with_dates.merge(
+            self.products_df[['id', 'name', 'sku', 'category_id', 'supplier_id', 'current_stock', 'minimum_stock']],
+            left_on='product_id',
+            right_on='id',
+            suffixes=('', '_product')
+        )
+
+        # Join with categories and suppliers for complete info
+        self.df = self.df.merge(
+            self.categories_df[['id', 'name']],
+            left_on='category_id',
+            right_on='id',
+            suffixes=('', '_category')
+        )
+
+        self.df = self.df.merge(
+            self.suppliers_df[['id', 'name']],
+            left_on='supplier_id',
+            right_on='id',
+            suffixes=('', '_supplier')
+        )
+
+        # Rename columns to match original format
+        self.df = self.df.rename(columns={
+            'product_id': 'product_id',
+            'name': 'product_name',
+            'name_category': 'category',
+            'name_supplier': 'supplier',
+            'quantity': 'quantity_sold',
+            'unit_price': 'unit_price',
+            'sale_date': 'sale_date'
+        })
+
+        # Select relevant columns
+        self.df = self.df[['product_id', 'product_name', 'sku', 'category', 'sale_date',
+                          'quantity_sold', 'unit_price', 'current_stock', 'minimum_stock', 'supplier']]
 
     def calculate_daily_demand(self, product_id, days_lookback=30):
         """Calculate average daily demand for a product"""
@@ -98,8 +112,22 @@ class StockPrediction:
             # Single sale record - estimate daily demand as that quantity
             return recent_data['quantity_sold'].iloc[0]
 
-    def predict_stockout_date(self, product_id, current_stock):
+    def predict_stockout_date(self, product_id, current_stock=None):
         """Predict when a product will run out of stock"""
+        # Get current stock from products table if not provided
+        if current_stock is None:
+            product_info = self.products_df[self.products_df['id'] == product_id]
+            if len(product_info) > 0:
+                current_stock = product_info['current_stock'].iloc[0]
+            else:
+                return {
+                    'days_to_stockout': None,
+                    'stockout_date': None,
+                    'daily_demand': 0,
+                    'confidence': 'LOW',
+                    'message': 'Product not found'
+                }
+
         daily_demand = self.calculate_daily_demand(product_id)
 
         if daily_demand <= 0:
@@ -170,33 +198,23 @@ class StockPrediction:
             'r2_score': r2_score(y, self.model.predict(X)) if len(y) > 1 else 0
         }
 
-    def generate_alerts(self, products_stock, production_info=None):
-        """Generate stock alerts for products.
-
-        products_stock: dict of {product_id: current_stock}
-        production_info: optional dict returned by fetch_production_info() with keys
-                         {product_id: {'alert_threshold_days': float, 'current_stock': int}}
-
-        If production_info contains 'alert_threshold_days' for a product, this function
-        will also compute whether the product will be empty within that threshold
-        (based on predicted daily demand).
-        """
+    def generate_alerts(self, products_stock=None):
+        """Generate stock alerts for products"""
         alerts = []
+
+        # If no specific products provided, analyze all products
+        if products_stock is None:
+            products_stock = {}
+            for _, product in self.products_df.iterrows():
+                products_stock[product['id']] = product['current_stock']
 
         for product_id, current_stock in products_stock.items():
             prediction = self.predict_stockout_date(product_id, current_stock)
 
-            # default values
-            prod_threshold = None
-            prod_current_stock = None
-            if production_info and product_id in production_info:
-                prod_threshold = production_info[product_id].get('alert_threshold_days')
-                prod_current_stock = production_info[product_id].get('current_stock')
-
             if prediction['days_to_stockout'] is not None:
                 days_left = prediction['days_to_stockout']
 
-                # Determine alert priority by time remaining (existing heuristic)
+                # Generate alerts based on time remaining
                 if days_left <= 3:
                     priority = 'CRITICAL'
                     alert_type = 'IMMEDIATE_STOCKOUT'
@@ -210,14 +228,6 @@ class StockPrediction:
                     priority = 'LOW'
                     alert_type = 'MONITOR_STOCK'
 
-                # If production provides an alert_threshold_days, compare with predicted days
-                will_be_empty_within_threshold = None
-                if prod_threshold is not None:
-                    try:
-                        will_be_empty_within_threshold = days_left <= float(prod_threshold)
-                    except Exception:
-                        will_be_empty_within_threshold = None
-
                 alerts.append({
                     'product_id': product_id,
                     'alert_type': alert_type,
@@ -226,9 +236,6 @@ class StockPrediction:
                     'predicted_stockout_date': prediction['stockout_date'],
                     'daily_demand': prediction['daily_demand'],
                     'current_stock': current_stock,
-                    'production_current_stock': prod_current_stock,
-                    'production_alert_threshold_days': prod_threshold,
-                    'will_be_empty_within_threshold': will_be_empty_within_threshold,
                     'confidence': prediction['confidence'],
                     'message': f"Product will run out in {days_left:.1f} days"
                 })
@@ -237,83 +244,23 @@ class StockPrediction:
 
     def analyze_all_products(self):
         """Analyze all products in the dataset"""
-        unique_products = self.df['product_id'].unique()
         analysis_results = {}
 
-        for product_id in unique_products:
-            # Get latest stock from the data (you might want to fetch this from your DB)
-            latest_entry = self.df[self.df['product_id'] == product_id].iloc[-1]
-            current_stock = latest_entry.get('current_stock', 100)  # Default if not in CSV
-
-            prediction = self.predict_stockout_date(product_id, current_stock)
+        for _, product in self.products_df.iterrows():
+            product_id = product['id']
+            prediction = self.predict_stockout_date(product_id)
             trend = self.predict_demand_trend(product_id)
 
             analysis_results[product_id] = {
-                'product_name': latest_entry.get('product_name', f'Product {product_id}'),
-                'current_stock': current_stock,
+                'product_name': product['name'],
+                'sku': product['sku'],
+                'current_stock': product['current_stock'],
+                'minimum_stock': product['minimum_stock'],
                 'prediction': prediction,
                 'trend_analysis': trend
             }
 
         return analysis_results
-
-    def insert_demand_forecasts(self, db_path, analysis_results):
-        """Insert demand forecast rows into the demand_forecasts table.
-
-        Columns expected:
-        id, product_id, days_to_stockout, average_daily_demand, confidence_level,
-        historical_data, calculation_date, created_at
-
-        historical_data will be stored as a JSON string summarizing available records.
-        """
-        try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-
-            # NOTE: do not create the table here; assume it exists.
-
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-            for product_id, analysis in analysis_results.items():
-                pred = analysis.get('prediction') or {}
-                days = pred.get('days_to_stockout')
-                avg_daily = pred.get('daily_demand')
-                conf = pred.get('confidence')
-
-                # historical summary: number of records and date range
-                hist = self.df[self.df['product_id'] == product_id]
-                if len(hist) > 0:
-                    hist_summary = {
-                        'records': int(len(hist)),
-                        'start_date': str(hist['sale_date'].min().date()),
-                        'end_date': str(hist['sale_date'].max().date())
-                    }
-                else:
-                    hist_summary = {'records': 0}
-
-                cur.execute(
-                    """
-                    INSERT INTO demand_forecasts (
-                        product_id, days_to_stockout, average_daily_demand,
-                        confidence_level, historical_data, calculation_date, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        product_id,
-                        days,
-                        avg_daily,
-                        conf,
-                        str(hist_summary),
-                        datetime.now().strftime('%Y-%m-%d'),
-                        now,
-                    ),
-                )
-
-            conn.commit()
-            conn.close()
-            print(f"Inserted {len(analysis_results)} demand forecast rows into {db_path}")
-        except Exception as e:
-            print(f"Warning: failed to insert demand forecasts into {db_path}: {e}")
 
     def plot_product_analysis(self, product_id):
         """Plot sales history and prediction for a product"""
@@ -358,28 +305,55 @@ class StockPrediction:
         plt.tight_layout()
         plt.show()
 
-def main():
-    """Example usage of the StockPrediction class"""
-    predictor = StockPrediction()
+    def save_demand_forecasts(self, output_file='data/updated_demand_forecasts.csv'):
+        """Calculate and save demand forecasts for all products"""
+        forecasts = []
 
-    # Load data
-    if not predictor.load_data('data/estokia_sales_data.csv'):
-        print("Failed to load data. Please ensure the CSV file exists.")
+        for _, product in self.products_df.iterrows():
+            product_id = product['id']
+            prediction = self.predict_stockout_date(product_id)
+
+            if prediction['days_to_stockout'] is not None:
+                forecast = {
+                    'id': f'forecast_{product_id}',
+                    'product_id': product_id,
+                    'days_to_stockout': prediction['days_to_stockout'],
+                    'average_daily_demand': prediction['daily_demand'],
+                    'confidence_level': 0.8 if prediction['confidence'] == 'HIGH' else 0.6 if prediction['confidence'] == 'MEDIUM' else 0.4,
+                    'historical_data': f'{{"sales_count": {len(self.df[self.df["product_id"] == product_id])}, "period_days": 60}}',
+                    'calculation_date': datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    'created_at': datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
+                }
+                forecasts.append(forecast)
+
+        # Save to CSV
+        forecasts_df = pd.DataFrame(forecasts)
+        forecasts_df.to_csv(output_file, index=False)
+        print(f"Saved {len(forecasts)} demand forecasts to {output_file}")
+
+        return forecasts_df
+
+def main():
+    """Example usage of the StockPredictionDB class"""
+    predictor = StockPredictionDB()
+
+    # Load data from normalized CSV files
+    if not predictor.load_data('data/'):
+        print("Failed to load data. Please ensure all CSV files exist in the data/ folder.")
         return
 
-    print("EstokIA Stock Prediction Analysis")
-    print("=" * 50)
+    print("EstokIA Stock Prediction Analysis (Database Format)")
+    print("=" * 60)
 
     # Analyze all products
     results = predictor.analyze_all_products()
 
-    # Persist demand forecasts to DB (best-effort)
-    predictor.insert_demand_forecasts(DB_PATH, results)
-
     # Display results
     for product_id, analysis in results.items():
         print(f"\nProduct: {analysis['product_name']} (ID: {product_id})")
+        print(f"SKU: {analysis['sku']}")
         print(f"Current Stock: {analysis['current_stock']}")
+        print(f"Minimum Stock: {analysis['minimum_stock']}")
 
         prediction = analysis['prediction']
         if prediction['days_to_stockout']:
@@ -397,22 +371,20 @@ def main():
             print(f"Model Accuracy (R²): {trend['r2_score']:.3f}")
 
     # Generate alerts for critical products
-    products_stock = {pid: analysis['current_stock'] for pid, analysis in results.items()}
+    alerts = predictor.generate_alerts()
 
-    # Try fetching production info from DB to get per-product alert thresholds
-    production_info = predictor.fetch_production_info(DB_PATH)
-
-    alerts = predictor.generate_alerts(products_stock, production_info=production_info)
-
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("STOCK ALERTS")
-    print("=" * 50)
+    print("=" * 60)
 
     for alert in alerts[:5]:  # Show top 5 critical alerts
         print(f"🚨 {alert['priority']} - Product {alert['product_id']}")
         print(f"   {alert['message']}")
         print(f"   Confidence: {alert['confidence']}")
         print()
+
+    # Save updated demand forecasts
+    predictor.save_demand_forecasts()
 
 if __name__ == "__main__":
     main()
