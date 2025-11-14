@@ -356,8 +356,7 @@ class SalesPredictionDB:
             # Use ISO 8601 format for Prisma compatibility
             now = datetime.now(timezone.utc)
             now_ts = now.strftime('%Y-%m-%dT%H:%M:%S.000Z')  # Full timestamp with time
-            calc_date = now.replace(hour=0, minute=0, second=0, microsecond=0)\
-                           .strftime('%Y-%m-%dT%H:%M:%S.000Z')  # Start of day
+            calc_date = now_ts
 
             for _, row in demand_forecasts_df.iterrows():
                 # Convert days_to_stockout to Int or None (Prisma expects Int?, not Float)
