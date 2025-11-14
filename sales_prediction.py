@@ -11,7 +11,7 @@ DB_PATH = '/Users/gkanawati/Documents/GitHub/estokia/estokia-backend/prisma/dev.
 
 class SalesPredictionDB:
 
-    def __init__(self, db_path=DB_PATH, user_id=9):
+    def __init__(self, db_path=DB_PATH, user_id=1):
         self.db_path = db_path
         self.user_id = user_id
         self.conn = None
@@ -63,7 +63,8 @@ class SalesPredictionDB:
             print("Error: sale_date column not found in sale_items.")
             return None
 
-        product_sales['sale_date'] = pd.to_datetime(product_sales['sale_date']).dt.normalize()
+        # Convert from Unix timestamp in milliseconds to datetime
+        product_sales['sale_date'] = pd.to_datetime(product_sales['sale_date'], unit='ms').dt.normalize()
 
         print('~ prepare_data - Merged product_sales: \n', product_sales)
 
@@ -254,8 +255,31 @@ class SalesPredictionDB:
 
         return future_data
 
+    def calculate_confidence_level(self, num_records):
+        """
+        Calculate confidence level based on number of historical records
+
+        Args:
+            num_records: Number of unique sale dates for the product
+
+        Returns:
+            str: Confidence level (VERY_LOW, LOW, MEDIUM, HIGH, VERY_HIGH)
+        """
+        if num_records < 8:
+            return 'VERY_LOW'
+        elif num_records < 15:
+            return 'LOW'
+        elif num_records < 30:
+            return 'MEDIUM'
+        elif num_records < 60:
+            return 'HIGH'
+        else:
+            return 'VERY_HIGH'
+
     def insert_demand_forecasts(self, db_path, demand_forecasts_df):
-        """Insert demand forecast rows into an existing demand_forecasts table.
+        """Insert or update demand forecast rows using SQLite UPSERT.
+
+        Maintains one record per user+product combination, updating on each run.
 
         demand_forecasts_df: DataFrame with columns [product_id, days_to_stockout, average_daily_demand, confidence_level, historical_data]
         """
@@ -264,38 +288,63 @@ class SalesPredictionDB:
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
 
+            # Ensure unique constraint exists (idempotent operation)
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                demand_forecasts_user_product_unique
+                ON demand_forecasts(user_id, product_id)
+            """)
+
             now_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            calc_date = datetime.now().strftime('%Y-%m-%d')
 
             for _, row in demand_forecasts_df.iterrows():
                 cur.execute(
                     """
                     INSERT INTO demand_forecasts (
-                        product_id, days_to_stockout, average_daily_demand,
+                        product_id, user_id, days_to_stockout, average_daily_demand,
                         confidence_level, historical_data, calculation_date, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, product_id) DO UPDATE SET
+                        days_to_stockout = excluded.days_to_stockout,
+                        average_daily_demand = excluded.average_daily_demand,
+                        confidence_level = excluded.confidence_level,
+                        historical_data = excluded.historical_data,
+                        calculation_date = excluded.calculation_date,
+                        created_at = excluded.created_at
                     """,
                     (
                         row.get('product_id'),
+                        self.user_id,
                         float(row.get('days_to_stockout')) if row.get('days_to_stockout') is not None else None,
                         float(row.get('average_daily_demand')) if row.get('average_daily_demand') is not None else None,
                         row.get('confidence_level'),
                         str(row.get('historical_data')),
-                        datetime.now().strftime('%Y-%m-%d'),
+                        calc_date,
                         now_ts,
                     ),
                 )
 
             conn.commit()
             conn.close()
-            print(f"Inserted {len(demand_forecasts_df)} demand forecast rows into {db_path}")
+            print(f"✓ Upserted {len(demand_forecasts_df)} demand forecasts for user_id={self.user_id}")
         except Exception as e:
-            print(f"Warning: failed to insert demand forecasts into {db_path}: {e}")
+            print(f"✗ Failed to upsert demand forecasts into {db_path}: {e}")
 
 def main():
     """Example usage of the SalesPredictionDB class - Full workflow demonstration"""
+    import sys
 
-    # Step 1: Initialize predictor
-    predictor = SalesPredictionDB()
+    # Check if user_id was provided as command-line argument
+    user_id = 1  # Default user_id (Admin User)
+    if len(sys.argv) > 1:
+        try:
+            user_id = int(sys.argv[1])
+        except ValueError:
+            print(f"Error: Invalid user_id '{sys.argv[1]}'. Using default user_id={user_id}")
+
+    # Step 1: Initialize predictor with user_id
+    predictor = SalesPredictionDB(user_id=user_id)
 
     # Step 2: Load data from database
     predictor.load_data()
@@ -353,17 +402,24 @@ def main():
         if avg_daily and current_stock is not None and avg_daily > 0:
             days_to_stockout = current_stock / avg_daily
 
+        # Calculate number of unique dates for confidence
+        num_unique_dates = prod_data['sale_date'].nunique()
+
         hist_summary = {
             'records': int(len(prod_data)),
+            'unique_dates': int(num_unique_dates),
             'start_date': str(prod_data['sale_date'].min().date()),
             'end_date': str(prod_data['sale_date'].max().date())
         }
+
+        # Calculate confidence based on data points
+        confidence = predictor.calculate_confidence_level(num_unique_dates)
 
         rows.append({
             'product_id': product_id,
             'days_to_stockout': days_to_stockout,
             'average_daily_demand': avg_daily,
-            'confidence_level': 'UNKNOWN',
+            'confidence_level': confidence,
             'historical_data': hist_summary,
         })
 

@@ -9,11 +9,13 @@ EstokIA ML is an intelligent inventory management system that uses machine learn
 ## 🚀 Features
 
 - **📊 Demand Forecasting**: Predict future product demand using historical sales data
+- **👤 Per-User Predictions**: Run forecasts for specific users with isolated data analysis
 - **⏰ Stockout Prediction**: Calculate when products will run out of stock with confidence intervals
 - **📈 Trend Analysis**: Identify demand trends (increasing/decreasing) using linear regression
 - **🚨 Smart Alerts**: Generate priority-based stock alerts (Critical, High, Medium, Low)
 - **📊 Data Visualization**: Interactive plots for sales history and demand trends
 - **🔍 Comprehensive Analysis**: Analyze entire product catalogs automatically
+- **🌐 REST API**: HTTP endpoints for integrating predictions into web applications
 
 ## 📁 Project Structure
 
@@ -77,9 +79,56 @@ print(f"Product will run out in {result['days_to_stockout']} days")
 print(f"Predicted stockout date: {result['stockout_date']}")
 ```
 
+### Per-User Sales Prediction
+
+The sales prediction system now supports per-user forecasting, allowing you to run predictions for specific users:
+
+```bash
+source venv/bin/activate
+
+# Run predictions for a specific user (e.g., user_id=15)
+python sales_prediction.py 15
+
+# Run with default user_id (15) if no argument provided
+python sales_prediction.py
+```
+
+The predictions are stored in the database with the user_id, enabling user-specific demand forecasting and inventory management.
+
+### Scheduled Predictions (Recommended) ⭐
+
+For production use, set up automatic predictions that run **3 times daily**:
+
+```bash
+# Easy setup with automated script
+./setup_cron.sh
+
+# Or test manually
+python3 run_daily_predictions.py
+
+# Monitor execution
+tail -f cron.log
+```
+
+**Schedule:**
+
+- 🌙 **02:00 AM** - Night processing (fresh morning data)
+- ☀️ **08:00 AM** - Morning update (start of business)
+- 🌆 **17:30 PM** - Evening update (end of business)
+
+**Benefits:**
+
+- ⚡ Instant API responses (pre-computed forecasts)
+- 🎯 Consistent predictions for all users
+- 📊 Multiple daily updates for fresh forecasts
+- 📝 Comprehensive logging and error handling
+
+See [SCHEDULED_PREDICTIONS.md](SCHEDULED_PREDICTIONS.md) for detailed setup or [CRON_QUICK_REFERENCE.md](CRON_QUICK_REFERENCE.md) for quick commands.
+
 ### Run Complete Analysis
 
 ```bash
+source venv/bin/activate
 python sales_prediction.py
 ```
 
