@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+import math
+from datetime import datetime, timedelta, timezone
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
@@ -9,9 +10,49 @@ warnings.filterwarnings('ignore')
 
 DB_PATH = '/Users/gkanawati/Documents/GitHub/estokia/estokia-backend/prisma/dev.db'
 
+def to_int_or_none(value):
+    """
+    Convert a value to int or None, handling NaN/inf/invalid values.
+
+    Args:
+        value: Any numeric or None value
+
+    Returns:
+        int or None: Rounded integer or None if invalid
+    """
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return int(round(f))
+
+def to_float_or_none(value):
+    """
+    Convert a value to float or None, handling NaN/inf/invalid values.
+
+    Args:
+        value: Any numeric or None value
+
+    Returns:
+        float or None: Float value or None if NaN/inf/invalid
+    """
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
 class SalesPredictionDB:
 
-    def __init__(self, db_path=DB_PATH, user_id=1):
+    def __init__(self, db_path=DB_PATH, user_id=3):
         self.db_path = db_path
         self.user_id = user_id
         self.conn = None
@@ -46,6 +87,20 @@ class SalesPredictionDB:
         print(f"Data loaded successfully for user_id={self.user_id}")
         print(f"Sale Items length: {len(self.sale_items)}")
         print(self.sale_items.head())
+
+    def load_products(self):
+        """Load products data to get current stock levels"""
+        self.connect_db()
+        self.products = pd.read_sql(
+            """
+                SELECT id, name, sku, current_stock, minimum_stock
+                FROM products
+                WHERE active=1
+            """,
+            self.conn
+        )
+        self.conn.close()
+        print(f"Products loaded: {len(self.products)}")
 
     def prepare_data(self):
         """Prepare data for sales prediction - unified DataFrame approach"""
@@ -280,10 +335,13 @@ class SalesPredictionDB:
         """Insert or update demand forecast rows using SQLite UPSERT.
 
         Maintains one record per user+product combination, updating on each run.
+        Ensures all values are Prisma-compatible (ISO 8601 dates, no NaN/inf).
 
         demand_forecasts_df: DataFrame with columns [product_id, days_to_stockout, average_daily_demand, confidence_level, historical_data]
         """
         import sqlite3
+        import json
+
         try:
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
@@ -295,10 +353,24 @@ class SalesPredictionDB:
                 ON demand_forecasts(user_id, product_id)
             """)
 
-            now_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            calc_date = datetime.now().strftime('%Y-%m-%d')
+            # Use ISO 8601 format for Prisma compatibility
+            now = datetime.now(timezone.utc)
+            now_ts = now.strftime('%Y-%m-%dT%H:%M:%S.000Z')  # Full timestamp with time
+            calc_date = now.replace(hour=0, minute=0, second=0, microsecond=0)\
+                           .strftime('%Y-%m-%dT%H:%M:%S.000Z')  # Start of day
 
             for _, row in demand_forecasts_df.iterrows():
+                # Convert days_to_stockout to Int or None (Prisma expects Int?, not Float)
+                days_to_stockout = to_int_or_none(row.get('days_to_stockout'))
+
+                # Convert average_daily_demand to Float or None (no NaN/inf)
+                avg_daily_demand = to_float_or_none(row.get('average_daily_demand'))
+
+                # Convert historical_data dict to proper JSON string
+                historical_data = None
+                if row.get('historical_data') is not None:
+                    historical_data = json.dumps(row.get('historical_data'))
+
                 cur.execute(
                     """
                     INSERT INTO demand_forecasts (
@@ -316,10 +388,10 @@ class SalesPredictionDB:
                     (
                         row.get('product_id'),
                         self.user_id,
-                        float(row.get('days_to_stockout')) if row.get('days_to_stockout') is not None else None,
-                        float(row.get('average_daily_demand')) if row.get('average_daily_demand') is not None else None,
+                        days_to_stockout,
+                        avg_daily_demand,
                         row.get('confidence_level'),
-                        str(row.get('historical_data')),
+                        historical_data,
                         calc_date,
                         now_ts,
                     ),
@@ -336,7 +408,7 @@ def main():
     import sys
 
     # Check if user_id was provided as command-line argument
-    user_id = 1  # Default user_id (Admin User)
+    user_id = 3  # Default user_id (Admin User)
     if len(sys.argv) > 1:
         try:
             user_id = int(sys.argv[1])
@@ -348,6 +420,9 @@ def main():
 
     # Step 2: Load data from database
     predictor.load_data()
+
+    # Step 2b: Load products data for current stock levels
+    predictor.load_products()
 
     # Step 3: Prepare data for training
     predictor.demand_forecast = predictor.prepare_data()
@@ -391,10 +466,10 @@ def main():
         # Use predict_stockout-like logic: estimate avg daily demand and days to stockout
         avg_daily = prod_data['quantity'].mean()
 
-        # current_stock: attempt to use latest current_stock in sale_items if present
-        latest = predictor.sale_items[predictor.sale_items['product_id'] == product_id]
-        if not latest.empty and 'current_stock' in latest.columns:
-            current_stock = int(latest.iloc[-1]['current_stock'])
+        # Get current_stock from products table
+        product_row = predictor.products[predictor.products['id'] == product_id]
+        if not product_row.empty:
+            current_stock = int(product_row.iloc[0]['current_stock'])
         else:
             current_stock = None
 

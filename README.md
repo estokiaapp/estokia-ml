@@ -2,33 +2,45 @@
 
 [![Python](https://img.shields.io/badge/Python-3.13.2-blue.svg)](https://python.org)
 [![Machine Learning](https://img.shields.io/badge/ML-Scikit--Learn-orange.svg)](https://scikit-learn.org)
+[![Database](https://img.shields.io/badge/Database-SQLite-blue.svg)](https://sqlite.org)
+[![Prisma](https://img.shields.io/badge/Prisma-Compatible-brightgreen.svg)](https://prisma.io)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-EstokIA ML is an intelligent inventory management system that uses machine learning to predict stock levels, forecast demand, and generate automated alerts for inventory optimization. Built with Python and scikit-learn, it helps businesses prevent stockouts and optimize their inventory management strategies.
+EstokIA ML is an intelligent inventory management system that uses machine learning to predict stock levels, forecast demand, and generate automated alerts for inventory optimization. Integrated with a Node.js/Fastify backend using Prisma ORM and SQLite, it provides per-user demand forecasting with 3x daily automated predictions.
 
 ## 🚀 Features
 
-- **📊 Demand Forecasting**: Predict future product demand using historical sales data
-- **👤 Per-User Predictions**: Run forecasts for specific users with isolated data analysis
-- **⏰ Stockout Prediction**: Calculate when products will run out of stock with confidence intervals
-- **📈 Trend Analysis**: Identify demand trends (increasing/decreasing) using linear regression
-- **🚨 Smart Alerts**: Generate priority-based stock alerts (Critical, High, Medium, Low)
-- **📊 Data Visualization**: Interactive plots for sales history and demand trends
-- **🔍 Comprehensive Analysis**: Analyze entire product catalogs automatically
-- **🌐 REST API**: HTTP endpoints for integrating predictions into web applications
+- **📊 Demand Forecasting**: Predict future product demand using historical sales data with linear regression
+- **👤 Per-User Predictions**: Isolated forecasts for each user with user-specific data filtering
+- **⏰ Stockout Prediction**: Calculate when products will run out of stock (`current_stock / daily_demand`)
+- **📈 Trend Analysis**: Time-based features (day_of_week, month, days_since_start) for seasonal patterns
+- **🔒 Type Safety**: NaN/inf filtering with Prisma-compatible data types (Int?, Float?, Enum)
+- **🗄️ Database Integration**: Direct SQLite queries with UPSERT strategy (one forecast per user+product)
+- **⏱️ Scheduled Automation**: Cron jobs for 3x daily predictions (02:00, 08:00, 17:30)
+- **🌐 REST API**: Prisma-powered endpoints for instant forecast retrieval
+- **📊 Confidence Levels**: 5-tier system based on data quality (VERY_LOW to VERY_HIGH)
 
 ## 📁 Project Structure
 
 ```
 estokia-ml/
-├── stock_prediction.py       # Main StockPrediction class
-├── linear_regression.ipynb   # Jupyter notebook for analysis
-├── data/
-│   ├── estokia_sales_data.csv    # Primary sales dataset (138 records)
-│   └── historico_vendas.csv      # Historical sales data
-├── venv/                     # Virtual environment
-├── CLAUDE.md                 # Development guidelines
-└── README.md                 # This file
+├── sales_prediction.py           # Main SalesPredictionDB class (database-integrated)
+├── run_daily_predictions.py      # Multi-user scheduler for automated predictions
+├── setup_cron.sh                 # Cron job installer (3x daily automation)
+├── linear_regression.ipynb       # Jupyter notebook for analysis
+├── venv/                         # Virtual environment
+├── predictions.log               # Execution logs from scheduled runs
+├── cron.log                      # Cron job execution logs
+├── CLAUDE.md                     # Development guidelines
+├── README.md                     # This file
+├── SCHEDULED_PREDICTIONS.md      # Detailed cron setup guide
+├── CRON_QUICK_REFERENCE.md       # Quick command reference
+├── SYSTEM_OVERVIEW.md            # Architecture documentation
+├── SALES_VS_STOCK_COMPARISON.md  # Comparison guide
+└── PREDICTION_CONFIDENCE_GUIDE.md # Data quality requirements
+
+Database (shared with backend):
+../estokia-backend/prisma/dev.db  # SQLite database managed by Prisma
 ```
 
 ## 🛠️ Installation
@@ -62,38 +74,39 @@ pip install pandas numpy scikit-learn matplotlib jupyter
 
 ## 🎯 Quick Start
 
-### Basic Usage
-
-```python
-from stock_prediction import StockPrediction
-
-# Initialize the predictor
-predictor = StockPrediction()
-
-# Load your sales data
-predictor.load_data('data/estokia_sales_data.csv')
-
-# Predict stockout for a specific product
-result = predictor.predict_stockout_date('PROD001', current_stock=25)
-print(f"Product will run out in {result['days_to_stockout']} days")
-print(f"Predicted stockout date: {result['stockout_date']}")
-```
-
-### Per-User Sales Prediction
-
-The sales prediction system now supports per-user forecasting, allowing you to run predictions for specific users:
+### Basic Usage (Per-User Predictions)
 
 ```bash
+# Activate virtual environment
 source venv/bin/activate
 
-# Run predictions for a specific user (e.g., user_id=15)
-python sales_prediction.py 15
+# Run predictions for a specific user (e.g., user_id=1)
+python sales_prediction.py 1
 
-# Run with default user_id (15) if no argument provided
-python sales_prediction.py
+# Run predictions for all active users
+python run_daily_predictions.py
 ```
 
-The predictions are stored in the database with the user_id, enabling user-specific demand forecasting and inventory management.
+**What happens:**
+1. Loads sales data from SQLite database (filtered by user_id)
+2. Loads product stock levels from products table
+3. Trains linear regression model per product
+4. Calculates `days_to_stockout = current_stock / average_daily_demand`
+5. Assigns confidence level based on data quality (unique sale dates)
+6. Upserts results into `demand_forecasts` table (one row per user+product)
+
+**Database output:**
+```sql
+SELECT product_id, days_to_stockout, average_daily_demand, confidence_level
+FROM demand_forecasts
+WHERE user_id = 1;
+
+-- Result:
+-- product_id | days_to_stockout | average_daily_demand | confidence_level
+-- 1          | 56               | 2.67                 | VERY_LOW
+-- 2          | 16               | 5.00                 | VERY_LOW
+-- 4          | 9                | 3.40                 | MEDIUM
+```
 
 ### Scheduled Predictions (Recommended) ⭐
 
@@ -146,114 +159,182 @@ jupyter notebook linear_regression.ipynb
 
 Open the Jupyter notebook for interactive data exploration and custom analysis.
 
-## 📊 Data Format
+## 📊 Database Schema (Prisma-Managed)
 
-The system expects CSV data with the following columns:
+The system reads from and writes to a shared SQLite database managed by Prisma ORM:
 
-| Column          | Description               | Example                |
-| --------------- | ------------------------- | ---------------------- |
-| `product_id`    | Unique product identifier | PROD001                |
-| `product_name`  | Product display name      | Notebook Acer Aspire 5 |
-| `sale_date`     | Date of sale (YYYY-MM-DD) | 2024-08-01             |
-| `quantity_sold` | Number of units sold      | 2                      |
-| `current_stock` | Current inventory level   | 45                     |
-| `minimum_stock` | Minimum stock threshold   | 5                      |
-| `unit_price`    | Price per unit            | 2500.00                |
-| `category`      | Product category          | Eletrônicos            |
-| `supplier`      | Supplier name             | Acer Brasil            |
+### Tables Used
+
+**sales** - Sale transactions
+- `id` (INTEGER), `user_id` (INTEGER), `sale_date` (BIGINT - Unix ms), `status` (TEXT)
+- Query: `WHERE user_id=? AND status='COMPLETED'`
+
+**sale_items** - Individual line items
+- `id`, `sale_id`, `product_id`, `quantity`, `unit_price`
+- Joined with `sales` to get sale_date per user
+
+**products** - Product catalog
+- `id`, `name`, `sku`, `current_stock`, `minimum_stock`, `active`
+- Used to fetch inventory levels for stockout calculation
+
+**demand_forecasts** - ML predictions (written by Python)
+- `product_id` (INTEGER), `user_id` (INTEGER) - Unique constraint
+- `days_to_stockout` (INTEGER?) - Rounded from float, NULL if no stock data
+- `average_daily_demand` (REAL?) - Validated float, NULL if NaN/inf
+- `confidence_level` (TEXT) - Enum: VERY_LOW, LOW, MEDIUM, HIGH, VERY_HIGH
+- `historical_data` (TEXT) - JSON: `{"records": 10, "unique_dates": 8, ...}`
+- `calculation_date` (TEXT) - ISO 8601: `2025-11-14T00:00:00.000Z`
+- `created_at` (TEXT) - ISO 8601: `2025-11-14T10:30:15.000Z`
+
+### Data Flow
+```
+SQLite DB → Python (sales_prediction.py) → demand_forecasts table → Prisma → Node.js API
+```
 
 ## 🔧 API Reference
 
-### StockPrediction Class
+### SalesPredictionDB Class
 
 #### Core Methods
 
-**`load_data(csv_path)`**
+**`__init__(db_path, user_id)`**
+- Initializes predictor for specific user
+- Parameters: `db_path` (str), `user_id` (int)
 
-- Loads sales data from CSV file
-- Automatically converts dates and handles errors
-- Returns: `bool` (success/failure)
+**`load_data()`**
+- Loads sales data from SQLite for the specified user
+- Queries: `sale_items` JOIN `sales` JOIN `products`
+- Filters: `WHERE user_id=? AND status='COMPLETED'`
 
-**`predict_stockout_date(product_id, current_stock)`**
+**`load_products()`**
+- **NEW**: Loads product catalog with current stock levels
+- Required for `days_to_stockout` calculation
+- Queries: `SELECT id, current_stock, minimum_stock FROM products WHERE active=1`
 
-- Predicts when a product will run out of stock
-- Returns: Dictionary with prediction details
+**`prepare_data()`**
+- Aggregates sales by product_id and sale_date
+- Adds time-based features: `days_since_start`, `day_of_week`, `month`
+- Converts Unix timestamps to datetime
+- Returns: DataFrame ready for model training
 
-```python
-{
-    'days_to_stockout': 12.5,
-    'stockout_date': '2024-10-08',
-    'daily_demand': 2.0,
-    'confidence': 'HIGH',
-    'message': 'Based on 25 sales records'
-}
-```
+**`train_model(product_id)`**
+- Trains linear regression model for specific product
+- Features: [days_since_start, day_of_week, month]
+- Target: quantity sold
+- Returns: Dictionary with model, data, predictions
 
-**`calculate_daily_demand(product_id, days_lookback=30)`**
+**`evaluate_model(trained_model)`**
+- Calculates R², MAE, MAPE metrics
+- Returns: Dictionary with performance metrics
+- Quality tiers: Poor (<0.3), Fair (0.3-0.5), Good (0.5-0.7), Very Good (0.7-0.85), Excellent (>0.85)
 
-- Calculates average daily demand for a product
-- Returns: `float` (daily demand rate)
+**`predict_future(trained_model, days_ahead=30)`**
+- Generates 30-day demand forecast
+- Returns: DataFrame with predicted quantities per day
 
-**`predict_demand_trend(product_id, days_ahead=30)`**
+**`calculate_confidence_level(num_records)`**
+- Maps unique sale dates to confidence enum
+- Returns: 'VERY_LOW', 'LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'
 
-- Analyzes demand trends using linear regression
-- Returns: Dictionary with trend analysis
+**`insert_demand_forecasts(db_path, demand_forecasts_df)`**
+- Upserts forecasts into database with type safety
+- Uses ISO 8601 datetime format
+- Filters NaN/inf values
+- UPSERT strategy: `ON CONFLICT(user_id, product_id) DO UPDATE`
 
-**`generate_alerts(products_stock)`**
+#### Helper Functions
 
-- Generates priority-based alerts for multiple products
-- Input: Dictionary of `{product_id: current_stock}`
-- Returns: List of alert dictionaries sorted by urgency
+**`to_int_or_none(value)`**
+- Safely converts float to int, handling NaN/inf
+- Returns: `int` or `None`
 
-**`plot_product_analysis(product_id)`**
+**`to_float_or_none(value)`**
+- Validates float values, filtering NaN/inf
+- Returns: `float` or `None`
 
-- Creates visualization plots for sales history and trends
-- Displays: Historical sales and trend line analysis
+## 📊 Confidence Levels (Data Quality)
 
-## 📈 Alert System
+Predictions include confidence levels based on unique sale dates (not total records):
 
-The system generates four priority levels based on days until stockout:
+| Level            | Unique Dates | R² Expected | Reliability              | Use Case                          |
+| ---------------- | ------------ | ----------- | ------------------------ | --------------------------------- |
+| ✅ **VERY_HIGH** | ≥60 dates    | >0.85       | Excellent - Production   | Automated decisions, budgeting    |
+| 🟢 **HIGH**      | 30-59 dates  | 0.70-0.85   | Very Good - Strategic    | Long-term planning, negotiations  |
+| 🟡 **MEDIUM**    | 15-29 dates  | 0.50-0.70   | Good - Operational       | Short-term forecasts, reordering  |
+| ⚠️ **LOW**       | 8-14 dates   | 0.30-0.50   | Fair - With Caution      | Rough estimates, combine with gut |
+| ❌ **VERY_LOW**  | <8 dates     | <0.30       | Poor - Collect More Data | Not recommended for decisions     |
 
-| Priority        | Days Left | Alert Type         | Action Required     |
-| --------------- | --------- | ------------------ | ------------------- |
-| 🚨 **CRITICAL** | ≤ 3 days  | IMMEDIATE_STOCKOUT | Order immediately   |
-| 🔴 **HIGH**     | 4-7 days  | URGENT_RESTOCK     | Plan urgent restock |
-| 🟡 **MEDIUM**   | 8-14 days | PLAN_RESTOCK       | Schedule restock    |
-| 🟢 **LOW**      | > 14 days | MONITOR_STOCK      | Continue monitoring |
+**Why unique dates matter:**
+- 10 sales on 1 day = VERY_LOW confidence (no pattern detection)
+- 10 sales over 10 days = LOW confidence (basic trend visible)
+- 30 sales over 30 days = MEDIUM confidence (weekly patterns emerge)
 
-## 📊 Confidence Levels
-
-Predictions include confidence levels based on available data:
-
-- **HIGH**: ≥20 sales records (most reliable)
-- **MEDIUM**: 10-19 sales records (moderate reliability)
-- **LOW**: <10 sales records (less reliable)
+See [PREDICTION_CONFIDENCE_GUIDE.md](PREDICTION_CONFIDENCE_GUIDE.md) for detailed analysis.
 
 ## 🎛️ Example Output
 
+### Console Output (Python Script)
 ```
-EstokIA Stock Prediction Analysis
-==================================================
+Data loaded successfully for user_id=1
+Sale Items length: 73
 
-Product: Notebook Acer Aspire 5 (ID: PROD001)
-Current Stock: 25
-Days to Stockout: 12.5
-Predicted Stockout Date: 2024-10-08
-Daily Demand: 2.0
-Confidence: HIGH
-Demand Trend: decreasing (slope: -0.015)
-Model Accuracy (R²): 0.847
+Products loaded: 10
 
-==================================================
-STOCK ALERTS
-==================================================
-🚨 CRITICAL - Product PROD003
-   Product will run out in 2.1 days
-   Confidence: MEDIUM
+Training model for product_id=4
+Total records: 15
+Date range: 2025-08-19 to 2025-11-12
 
-🔴 HIGH - Product PROD001
-   Product will run out in 6.5 days
-   Confidence: HIGH
+Model trained successfully!
+Coefficients: [0.02 -0.15 0.08]
+Intercept: 3.2450
+
+Model Evaluation - Product ID: 4
+R² (R-squared): 68.42% - Model explains 68.42% of variance
+MAE (Mean Absolute Error): 1.2340 units
+MAPE (Mean Absolute % Error): 28.45%
+Model Quality: Good
+
+✓ Upserted 9 demand forecasts for user_id=1
+```
+
+### Database Result
+```sql
+SELECT
+  p.name,
+  df.days_to_stockout,
+  df.average_daily_demand,
+  df.confidence_level,
+  p.current_stock
+FROM demand_forecasts df
+JOIN products p ON df.product_id = p.id
+WHERE df.user_id = 1
+ORDER BY df.days_to_stockout ASC;
+
+-- Critical alerts (low days_to_stockout):
+-- Garden Hose      | 9 days  | 3.40 units/day | MEDIUM   | 30 stock
+-- Denim Jeans      | 16 days | 5.00 units/day | VERY_LOW | 80 stock
+-- Bluetooth Phones | 18 days | 2.50 units/day | LOW      | 45 stock
+```
+
+### API Response (GET /api/predictions/sales/1)
+```json
+{
+  "user_id": 1,
+  "total_forecasts": 9,
+  "forecasts": [
+    {
+      "productId": 4,
+      "daysToStockout": 9,
+      "averageDailyDemand": 3.4,
+      "confidenceLevel": "MEDIUM",
+      "product": {
+        "name": "Garden Hose",
+        "currentStock": 30,
+        "minimumStock": 8
+      }
+    }
+  ]
+}
 ```
 
 ## 🤝 Contributing
